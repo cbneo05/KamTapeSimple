@@ -1,5 +1,5 @@
 # KamTape 
-<img src="https://github.com/cbneo05/KamTapeSimple/screenshot/1.png" /> 
+<img src="https://github.com/cbneo05/KamTapeSimple/s/1.png" /> 
 
 What is KamTape?
 <p>KamTape is a lil yt clone that u can!</p>
