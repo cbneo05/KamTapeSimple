@@ -1,4 +1,6 @@
-# KamTape <picture> <img src="https://github.com/cbneo05/KamTapeSimple/img/logo_sm.gif"> </picture>
+# KamTape 
+<img src="https://github.com/cbneo05/KamTapeSimple/img/logo_sm.gif" /> 
+
 What is KamTape?
 <p>KamTape is a lil yt clone that u can!</p>
 <ul>
