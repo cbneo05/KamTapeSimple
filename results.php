@@ -1,0 +1,388 @@
+<?php
+include 'init.php';
+include 'template.php';
+
+function get_profile_icon($username, $profile_icon_setting = '0') {
+    static $icon_cache = [];
+    
+    $cache_key = $username . '_' . $profile_icon_setting;
+    if (isset($icon_cache[$cache_key])) {
+        return $icon_cache[$cache_key];
+    }
+    
+    if ($profile_icon_setting === '1') {
+        $icon_cache[$cache_key] = 'img/no_videos_140.jpg';
+        return 'img/no_videos_140.jpg';
+    }
+    
+    global $db;
+    $stmt = $db->prepare("SELECT preview FROM videos WHERE user = ? ORDER BY id DESC LIMIT 1");
+    $stmt->execute([$username]);
+    $last_video = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if ($last_video && $last_video['preview']) {
+        $icon_cache[$cache_key] = $last_video['preview'];
+        return $last_video['preview'];
+    }
+    
+    $icon_cache[$cache_key] = 'img/no_videos_140.jpg';
+    return 'img/no_videos_140.jpg';
+}
+
+function time_ago($time) {
+    $diff = time() - $time;
+    if ($diff < 60) return $diff.' seconds ago';
+    $mins = floor($diff/60);
+    if ($mins < 60) {
+        $n = $mins;
+        $f = ($n == 1) ? 'minute' : 'minutes';
+        return "$n $f ago";
+    }
+    $hours = floor($mins/60);
+    if ($hours < 24) {
+        $n = $hours;
+        $f = ($n == 1) ? 'hour' : 'hours';
+        return "$n $f ago";
+    }
+    $days = floor($hours/24);
+    if ($days < 7) {
+        $n = $days;
+        $f = ($n == 1) ? 'day' : 'days';
+        return "$n $f ago";
+    }
+    $weeks = floor($days/7);
+    if ($weeks < 5) {
+        $n = $weeks;
+        $f = ($n == 1) ? 'week' : 'weeks';
+        return "$n $f ago";
+    }
+    $months = floor($days/30);
+    if ($months < 12) {
+        $n = $months;
+        $f = ($n == 1) ? 'month' : 'months';
+        return "$n $f ago";
+    }
+    $years = floor($days/365);
+    $n = $years;
+    $f = ($n == 1) ? 'year' : 'years';
+    return "$n $f ago";
+}
+
+function get_video_duration($file, $id) {
+    $cache_file = __DIR__ . '/uploads/' . intval($id) . '_duration.txt';
+    if (file_exists($cache_file)) {
+        $duration = trim(file_get_contents($cache_file));
+        if (preg_match('/^\d{1,5}(:[0-5]\d){1,2}$/', $duration)) return $duration;
+    }
+    $ffprobe = 'ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 ' . escapeshellarg($file);
+    $out = shell_exec($ffprobe);
+    $seconds = intval(round(floatval($out)));
+    $h = floor($seconds / 3600);
+    $m = floor(($seconds % 3600) / 60);
+    $s = $seconds % 60;
+    if ($h > 0) {
+        $duration = sprintf('%d:%02d:%02d', $h, $m, $s);
+    } else {
+        $duration = sprintf('%d:%02d', $m, $s);
+    }
+    if ($seconds < 360000) file_put_contents($cache_file, $duration);
+    return $duration;
+}
+
+function get_results_rating_stats($db, $video_id) {
+    $stmt = $db->query("SELECT COUNT(*) as cnt, AVG(rating) as avg_rating FROM ratings WHERE video_id = ".intval($video_id));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    $count = intval($row['cnt'] ?? 0);
+    $avg = $row['avg_rating'] !== null ? round((float)$row['avg_rating'], 1) : 0.0;
+    return [$count, $avg];
+}
+
+function render_avg_stars_html($avg, $count) {
+    $remaining = floatval($avg);
+    $parts = [];
+    for ($i=0; $i<5; $i++) {
+        if ($remaining >= 0.75) $parts[] = 'full';
+        elseif ($remaining >= 0.25) $parts[] = 'half';
+        else $parts[] = 'empty';
+        $remaining = max(0.0, $remaining - 1.0);
+    }
+    ob_start();
+    ?>
+    <div style="margin:2px 0 2px 0;">
+      <nobr>
+        <img src="img/star_smn<?=($parts[0]==='full'?'':($parts[0]==='half'?'_half':'_bg'))?>.gif" style="border:0; vertical-align:middle;">
+        <img src="img/star_smn<?=($parts[1]==='full'?'':($parts[1]==='half'?'_half':'_bg'))?>.gif" style="border:0; vertical-align:middle;">
+        <img src="img/star_smn<?=($parts[2]==='full'?'':($parts[2]==='half'?'_half':'_bg'))?>.gif" style="border:0; vertical-align:middle;">
+        <img src="img/star_smn<?=($parts[3]==='full'?'':($parts[3]==='half'?'_half':'_bg'))?>.gif" style="border:0; vertical-align:middle;">
+        <img src="img/star_smn<?=($parts[4]==='full'?'':($parts[4]==='half'?'_half':'_bg'))?>.gif" style="border:0; vertical-align:middle;">
+      </nobr>
+      <div class="rating"><?=intval($count)?> ratings</div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
+$search_query = isset($_GET['search_query']) ? trim($_GET['search_query']) : '';
+$search_type = isset($_GET['search_type']) ? trim($_GET['search_type']) : '';
+
+if (empty($search_query)) {
+    header('Location: index.php');
+    exit;
+}
+
+$videos = array();
+if ($search_query) {
+    try {
+        $search_term = '%' . $search_query . '%';
+        
+        $stmt = $db->prepare("SELECT * FROM videos WHERE (private = 0 OR private IS NULL) ORDER BY id DESC");
+        $stmt->execute();
+        $all_public = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $needle = mb_strtolower($search_query, 'UTF-8');
+        $videos = [];
+        foreach ($all_public as $row) {
+            $title = isset($row['title']) ? $row['title'] : '';
+            $desc  = isset($row['description']) ? $row['description'] : '';
+            $userf = isset($row['user']) ? $row['user'] : '';
+            $tags  = isset($row['tags']) ? $row['tags'] : '';
+
+            if ($search_type === 'tag') {
+                if ($tags !== '' && mb_stripos($tags, $needle, 0, 'UTF-8') !== false) {
+                    $videos[] = $row;
+                }
+            } else {
+                if (
+                    ($title !== '' && mb_stripos($title, $needle, 0, 'UTF-8') !== false) ||
+                    ($desc  !== '' && mb_stripos($desc,  $needle, 0, 'UTF-8') !== false) ||
+                    ($userf !== '' && mb_stripos($userf, $needle, 0, 'UTF-8') !== false) ||
+                    ($tags  !== '' && mb_stripos($tags,  $needle, 0, 'UTF-8') !== false)
+                ) {
+                    $videos[] = $row;
+                }
+            }
+        }
+
+        
+    } catch (PDOException $e) {
+        echo "<div class='errorBox'>Database error: " . htmlspecialchars($e->getMessage()) . ".</div>";
+    }
+}
+
+$page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+$per_page = 5;
+$total = count($videos);
+$total_pages = ceil($total / $per_page);
+$offset = ($page - 1) * $per_page;
+$paged_videos = array_slice($videos, $offset, $per_page);
+
+showHeader('Search Results: ' . htmlspecialchars($search_query));
+?>
+
+<style>
+.vfacets { margin: 5px 0; }
+.vtagLabel { font-size: 11px; color: #888; display: inline; }
+.vtagValue { display: inline; margin-left: 5px; }
+
+.vtagValue .dg,
+.vtagValue .dg:visited {
+  color: #333;
+  text-decoration: underline;
+}
+
+.vtagValue .dg:hover {
+  color: #333;
+  text-decoration: underline;
+}
+</style>
+
+<table width="790" align="center" cellpadding="0" cellspacing="0" border="0">
+  <tr valign="top">
+    <td style="padding-right: 15px;">
+            <table width="595" align="center" cellpadding="0" cellspacing="0" border="0" bgcolor="#CCCCCC">
+         <tr>
+          <td><img src="img/box_login_tl.gif" width="5" height="5"></td>
+          <td width="100%"><img src="img/pixel.gif" width="1" height="5"></td>
+          <td><img src="img/box_login_tr.gif" width="5" height="5"></td>
+         </tr>
+         <tr>
+          <td><img src="img/pixel.gif" width="5" height="1"></td>
+          <td width="585">
+            <div class="moduleTitleBar">
+              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="font-size:14px; font-weight:bold; color:#444; text-align:left; padding-left: 5px;  padding-bottom: 5px;">
+                     Search Results: '<?=htmlspecialchars($search_query)?>'
+                  </td>
+                  <td style="font-size:12px; font-weight:bold; color:#444; text-align:right; padding-right:5px; padding-bottom: 7px; white-space:nowrap;">
+                     Showing
+                     <?=($page-1)*$per_page+1?>-<?=min($page*$per_page, $total)?> of <?=$total?>
+                  </td>
+                </tr>
+              </table>
+            </div>
+           
+            <?php if (empty($videos)): ?>
+                <div style="background-color:#FFFFFF;padding: 6px; ">
+    No videos found matching '<?=htmlspecialchars($search_query)?>'.
+    </div>
+            <?php else: ?>
+             
+             <?php foreach ($paged_videos as $video): 
+                    $desc = htmlspecialchars($video['description']);
+                    $desc_short = mb_strlen($desc) > 30 ? mb_substr($desc, 0, 30) . '...' : $desc;
+                    $desc_id = 'desc_' . $video['id'];
+                    $desc_full = nl2br($desc);
+                    $comments_count = 0;
+                    try {
+                        $stmtCc = $db->prepare("SELECT COUNT(*) FROM comments WHERE video_id = ?");
+                        $stmtCc->execute([$video['id']]);
+                        $comments_count = (int)$stmtCc->fetchColumn();
+                    } catch (Exception $e) {
+                        $comments_count = 0;
+                    }
+                    list($rc, $ra) = get_results_rating_stats($db, $video['id']);
+             ?>
+                <div style="background-color:#DDD; background-image:url('img/table_results_bg.gif'); background-position:left top; background-repeat:repeat-x; border-bottom:1px dashed #999999; padding:10px;">
+                  <table width="565" cellpadding="0" cellspacing="0" border="0">
+                    <tr valign="top">
+                      <td width="120"><a href="video.php?id=<?=htmlspecialchars($video['public_id'] ?? $video['id'])?>"><img src="<?=htmlspecialchars($video['preview'])?>" class="moduleEntryThumb" width="120" height="90" style="border:1px solid #888;"></a></td>
+                      <td width="100%" style="padding-left:8px;">
+                        <div style="font-size:15px; font-weight:bold;"><a href="video.php?id=<?=htmlspecialchars($video['public_id'] ?? $video['id'])?>" style="color:#0033cc; text-decoration:underline;"><?=htmlspecialchars($video['title'])?></a></div>
+                        <div style="font-size:12px; color:#222; font-weight:bold; margin:2px 0 2px 0;"><?=get_video_duration($video['file'], $video['id'])?></div>
+                        <span id="<?= $desc_id ?>-short" style="font-size:12px; color:#222; margin:2px 0 2px 0;">
+                          <?= $desc_short ?><?php if (mb_strlen($desc) > 30): ?> <a href="#" onclick="return showDescMore('<?= $desc_id ?>');" style="color:#0033cc; font-size:11px;">(more)</a><?php endif; ?>
+                        </span>
+                        <span id="<?= $desc_id ?>-full" style="display:none; font-size:12px; color:#222; margin:2px 0 2px 0;">
+                          <?= $desc_full ?> <a href="#" onclick="return showDescless('<?= $desc_id ?>');" style="color:#0033cc; font-size:11px;">(less)</a>
+                        </span>
+                        <?php if (!empty($video['tags'])): ?>
+                        <div class="vfacets">
+                            <div class="vtagLabel">Tags:</div>
+                            <div class="vtagValue">
+                                <span id="vidTagsBegin-<?=$video['id']?>">
+                                    <?php 
+                                    $tags = preg_split('/\s+/', trim($video['tags'] ?? ''), -1, PREG_SPLIT_NO_EMPTY);
+                                    $visible_tags = array_slice($tags, 0, 5);
+                                    $hidden_tags = array_slice($tags, 5);
+                                   
+                                    foreach ($visible_tags as $tag): 
+                                      $tag = trim($tag);
+                                      if (!empty($tag)):
+                                    ?>
+                                      <a href="results.php?search_type=tag&search_query=<?=urlencode($tag)?>" class="dg"><?=htmlspecialchars($tag)?></a>&nbsp;
+                                    <?php 
+                                      endif;
+                                    endforeach; 
+                                   
+                                    if (!empty($hidden_tags)):
+                                    ?>
+                                    <span id="vidTagsRemain-<?=$video['id']?>" style="display: none;">
+                                      <?php foreach ($hidden_tags as $tag): 
+                                        $tag = trim($tag);
+                                        if (!empty($tag)):
+                                      ?><a href="results.php?search_type=tag&search_query=<?=urlencode($tag)?>" class="dg"><?=htmlspecialchars($tag)?></a>&nbsp;<?php 
+                                        endif;
+                                      endforeach; 
+                                      ?></span>&nbsp;<span id="vidTagsMore-<?=$video['id']?>" class="smallText">(<a href="#" class="eLink" onclick="showInline('vidTagsRemain-<?=$video['id']?>'); hideInline('vidTagsMore-<?=$video['id']?>'); showInline('vidTagsLess-<?=$video['id']?>'); return false;">more</a>)</span><span id="vidTagsLess-<?=$video['id']?>" class="smallText" style="display: none;">(<a href="#" class="eLink" onclick="hideInline('vidTagsRemain-<?=$video['id']?>'); hideInline('vidTagsLess-<?=$video['id']?>'); showInline('vidTagsMore-<?=$video['id']?>'); return false;">less</a>)</span>
+                                    <?php endif; ?>
+                                </span>
+                            </div>
+                        </div>
+                        <?php endif; ?>
+                        <div style="font-size:11px; margin:2px 0 2px 0;"><span style="color:#888;">Added:</span> <?= time_ago(strtotime($video['time'])) ?></div>
+                        <div style="font-size:11px; margin:2px 0 2px 0;"><span style="color:#888;">From:</span> <a href="channel.php?user=<?= htmlspecialchars($video['user']) ?>" style="color:#0033cc; text-decoration:underline;"><b><?= htmlspecialchars($video['user']) ?></b></a></div>
+                        <div style="font-size:11px; margin:2px 0 2px 0;"><span style="color:#888;">Views:</span> <?= intval($video['views']) ?></div>
+                        <?= render_avg_stars_html($ra, $rc) ?>
+                      </td>
+                    </tr>
+                  </table>
+                </div>
+              <?php endforeach; ?>
+             
+                                                            <?php if ($total_pages > 1): ?>
+                <div class="pagingDiv" style="background: #CCC; margin: 0px 0 0px 0; padding: 5px 0px; font-size: 13px; color: #333; font-weight: bold; text-align: right;">
+                    Page:
+                    <?php
+                    $start_page = max(1, $page - 2);
+                    $end_page = min($total_pages, $page + 2);
+                    $search_param = 'search_query='.urlencode($search_query).'&';
+                    if ($search_type) {
+                        $search_param .= 'search_type='.urlencode($search_type).'&';
+                    }
+                   
+                    if ($start_page > 1) {
+                        echo '<span class="pagerNotCurrent" style="color: #03C; background-color: #CCC; padding: 1px 4px; border: 1px solid #999; margin-right: 5px; text-decoration: underline; cursor: pointer;"><a href="?'.$search_param.'page=1" style="color: #03C; text-decoration: underline;">1</a></span>';
+                        if ($start_page > 2) echo ' ... ';
+                    }
+                   
+                    for ($i = $start_page; $i <= $end_page; $i++) {
+                        if ($i == $page) {
+                            echo '<span class="pagerCurrent" style="color: #333; background-color: #FFF; padding: 1px 4px; border: 1px solid #999; margin-right: 5px; cursor: pointer;">'.$i.'</span>';
+                        } else {
+                            echo '<span class="pagerNotCurrent" style="color: #03C; background-color: #CCC; padding: 1px 4px; border: 1px solid #999; margin-right: 5px; text-decoration: underline; cursor: pointer;"><a href="?'.$search_param.'page='.$i.'" style="color: #03C; text-decoration: underline;">'.$i.'</a></span>';
+                        }
+                    }
+                   
+                    if ($end_page < $total_pages) {
+                        if ($end_page < $total_pages - 1) echo ' ... ';
+                        echo '<span class="pagerNotCurrent" style="color: #03C; background-color: #CCC; padding: 1px 4px; border: 1px solid #999; margin-right: 5px; text-decoration: underline; cursor: pointer;"><a href="?'.$search_param.'page='.$total_pages.'" style="color: #03C; text-decoration: underline;">'.$total_pages.'</a></span>';
+                    }
+                   
+                    if ($page < $total_pages) {
+                        echo '<span class="pagerNotCurrent" style="color: #03C; background-color: #CCC; padding: 1px 4px; border: 1px solid #999; margin-right: 5px; text-decoration: underline; cursor: pointer;"><a href="?'.$search_param.'page='.($page + 1).'" style="color: #03C; text-decoration: underline;">Next</a></span>';
+                    }
+                    ?>
+                </div>
+                <?php endif; ?>
+            <?php endif; ?>
+          </td>
+          <td><img src="img/pixel.gif" width="5" height="1"></td>
+        </tr>
+        <tr>
+          <td><img src="img/box_login_bl.gif" width="5" height="5"></td>
+          <td><img src="img/pixel.gif" width="1" height="5"></td>
+          <td><img src="img/box_login_br.gif" width="5" height="5"></td>
+        </tr>
+      </table>
+    </td>
+    <td width="180">
+      <table width="180" align="center" cellpadding="0" cellspacing="0" border="0" bgcolor="#FFEEBB">
+        <tr>
+          <td><img src="img/box_login_tl.gif" width="5" height="5"></td>
+          <td><img src="img/pixel.gif" width="1" height="5"></td>
+          <td><img src="img/box_login_tr.gif" width="5" height="5"></td>
+        </tr>
+        <tr>
+          <td><img src="img/pixel.gif" width="5" height="1"></td>
+          <td width="170">
+            <div style="font-size: 16px; font-weight: bold; text-align: center; padding: 5px 5px 10px 5px;"><a href="register.php">Sign up for free!</a></div>
+          </td>
+          <td><img src="img/pixel.gif" width="5" height="1"></td>
+        </tr>
+        <tr>
+          <td><img src="img/box_login_bl.gif" width="5" height="5"></td>
+          <td><img src="img/pixel.gif" width="1" height="5"></td>
+          <td><img src="img/box_login_br.gif" width="5" height="5"></td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<?php showFooter(); ?>
+
+<script type="text/javascript">
+function showDescMore(id) {
+  var s = document.getElementById(id+'-short');
+  var f = document.getElementById(id+'-full');
+  if (s && f) { s.style.display = 'none'; f.style.display = 'inline'; }
+  return false;
+}
+function showDescless(id) {
+  var s = document.getElementById(id+'-short');
+  var f = document.getElementById(id+'-full');
+  if (s && f) { f.style.display = 'none'; s.style.display = 'inline'; }
+  return false;
+}
+</script>

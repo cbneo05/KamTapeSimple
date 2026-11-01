@@ -1,19 +1,5 @@
-# KamTape <picture> <img src="https://github.com/cbneo05/KamTapeSimple/img/logo_sm.gif"> </picture>
-What is KamTape?
-<p>KamTape is a lil yt clone that u can!</p>
-<ul>
-  <li>Create a Account</li>
-  <li>Login to a Account</li>
-  <li>Invite Friends</li>
-  <li>Post Videos</li>
-  <li>Watch Videos</li>
-  <li>and much,much more...</li>
-</ul>
+# RetroShow - движок для создания видеосайта.
 
-<p>See on this page a little guide how to setup a KamTape instance</p>
-<a href="http://kamtape.lunmo.ws/guide.php">http://kamtape.lunmo.ws/guide.php</a>
+<img src="screenshots/1.png" alt="Скриншот.">
 
-<p>see this vid how to setup a KamTape instance</p>
-<a href="http://retroshow.su">retroshow.su</a>
-<br>
-<i>Made by SwedishCeko</i>
+RetroShow - это движок для создания видеосайта, стилизованного под YouTube образца августа 2005-го года. Движок прекрасно работает в старых браузерах вроде **Internet Explorer 5**. Для установки вам потребуется веб-сервер с PHP и FFmpeg.
